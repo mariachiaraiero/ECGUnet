@@ -50,49 +50,91 @@ def parse_args():
 
 
 # ============================================================
-#  Metriche
+#  Metriche AAMI (150ms Tolerance)
 # ============================================================
-def compute_metrics(preds, targets, num_classes=4):
+def extract_segments(mask_1d, class_id):
+    """Estrae (onset, offset) di tutti i segmenti contigui di una certa classe"""
+    is_class = (mask_1d == class_id).astype(int)
+    diff = np.diff(np.pad(is_class, (1, 1), constant_values=0))
+    onsets = np.where(diff == 1)[0]
+    offsets = np.where(diff == -1)[0] - 1
+    return list(zip(onsets, offsets))
+
+
+def compute_metrics(preds_tensor, targets_tensor, num_classes=4, fs=500, tolerance_ms=150):
     """
-    Calcola accuracy, F1 per classe e IoU per classe.
-
-    Args:
-        preds:   (N,) tensor di predizioni (long)
-        targets: (N,) tensor di labels (long)
-
-    Returns:
-        dict con accuracy, f1_per_class, iou_per_class, f1_macro, iou_mean
+    Calcola le metriche di accuratezza AAMI-style come descritte in f9.pdf.
+    La tolleranza è 150ms.
     """
-    accuracy = (preds == targets).float().mean().item()
-
-    f1_scores = []
-    iou_scores = []
-
-    for c in range(num_classes):
-        pred_c = (preds == c)
-        true_c = (targets == c)
-
-        tp = (pred_c & true_c).sum().float()
-        fp = (pred_c & ~true_c).sum().float()
-        fn = (~pred_c & true_c).sum().float()
-
-        # F1
-        precision = tp / (tp + fp + 1e-8)
-        recall = tp / (tp + fn + 1e-8)
-        f1 = 2 * precision * recall / (precision + recall + 1e-8)
-        f1_scores.append(f1.item())
-
-        # IoU (Jaccard)
-        iou = tp / (tp + fp + fn + 1e-8)
-        iou_scores.append(iou.item())
-
-    return {
-        'accuracy': accuracy,
-        'f1_per_class': f1_scores,
-        'iou_per_class': iou_scores,
-        'f1_macro': np.mean(f1_scores),
-        'iou_mean': np.mean(iou_scores),
+    preds = preds_tensor.numpy()
+    targets = targets_tensor.numpy()
+    
+    tol_samples = int((tolerance_ms / 1000.0) * fs)
+    
+    results = {
+        c: {'onset': {'TP': 0, 'FP': 0, 'FN': 0, 'errors': []}, 
+            'offset': {'TP': 0, 'FP': 0, 'FN': 0, 'errors': []}}
+        for c in range(1, num_classes)
     }
+
+    for i in range(len(preds)):
+        pred_mask = preds[i]
+        true_mask = targets[i]
+        
+        for c in range(1, num_classes):
+            true_segs = extract_segments(true_mask, c)
+            pred_segs = extract_segments(pred_mask, c)
+            
+            for is_offset, idx in [(False, 0), (True, 1)]:
+                ptype = 'offset' if is_offset else 'onset'
+                
+                true_pts = [s[idx] for s in true_segs]
+                pred_pts = [s[idx] for s in pred_segs]
+                
+                matched_preds = set()
+                for t_pt in true_pts:
+                    valid_preds = [p for p in pred_pts if abs(p - t_pt) <= tol_samples and p not in matched_preds]
+                    if valid_preds:
+                        best_p = min(valid_preds, key=lambda p: abs(p - t_pt))
+                        matched_preds.add(best_p)
+                        results[c][ptype]['TP'] += 1
+                        error_ms = (best_p - t_pt) / fs * 1000.0
+                        results[c][ptype]['errors'].append(error_ms)
+                    else:
+                        results[c][ptype]['FN'] += 1
+                        
+                fp_count = len(pred_pts) - len(matched_preds)
+                results[c][ptype]['FP'] += fp_count
+
+    metrics_summary = {'f1_list': []}
+    f1_list = []
+    
+    for c in range(1, num_classes):
+        for ptype in ['onset', 'offset']:
+            tp = results[c][ptype]['TP']
+            fp = results[c][ptype]['FP']
+            fn = results[c][ptype]['FN']
+            errs = results[c][ptype]['errors']
+            
+            se = tp / (tp + fn + 1e-8)
+            ppv = tp / (tp + fp + 1e-8)
+            f1 = 2 * se * ppv / (se + ppv + 1e-8)
+            
+            metrics_summary[f"{c}_{ptype}_Se"] = se * 100.0
+            metrics_summary[f"{c}_{ptype}_PPV"] = ppv * 100.0
+            metrics_summary[f"{c}_{ptype}_F1"] = f1 * 100.0
+            metrics_summary[f"{c}_{ptype}_m"] = np.mean(errs) if errs else 0.0
+            metrics_summary[f"{c}_{ptype}_std"] = np.std(errs) if errs else 0.0
+            
+            f1_list.append(f1)
+            
+    metrics_summary['f1_macro'] = np.mean(f1_list) * 100.0
+    metrics_summary['accuracy'] = (preds == targets).mean()
+    metrics_summary['iou_mean'] = 0.0  # Dummy
+    metrics_summary['f1_per_class'] = [0] + [metrics_summary[f"{c}_onset_F1"] for c in range(1, num_classes)] 
+    metrics_summary['iou_per_class'] = [0, 0, 0, 0] # Dummy
+    
+    return metrics_summary
 
 
 # ============================================================
@@ -105,19 +147,25 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     all_targets = []
 
     for X_batch, Y_batch in loader:
-        X_batch = X_batch.to(device)    # (B, 1, L)
-        Y_batch = Y_batch.to(device)    # (B, L)
+        # DATA AUGMENTATION: Estrazione crop 4 secondi da [2s, 8s] (campioni 1000-4000)
+        if X_batch.size(2) >= 5000:
+            start_idx = np.random.randint(1000, 2001)
+            X_batch = X_batch[:, :, start_idx:start_idx+2000]
+            Y_batch = Y_batch[:, start_idx:start_idx+2000]
+            
+        X_batch = X_batch.to(device)    # (B, 1, 2000)
+        Y_batch = Y_batch.to(device)    # (B, 2000)
 
         optimizer.zero_grad()
-        logits = model(X_batch)         # (B, 4, L)
+        logits = model(X_batch)         # (B, 4, 2000)
         loss = criterion(logits, Y_batch)
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item() * X_batch.size(0)
-        preds = logits.argmax(dim=1)    # (B, L)
-        all_preds.append(preds.cpu().flatten())
-        all_targets.append(Y_batch.cpu().flatten())
+        preds = logits.argmax(dim=1)    # (B, 2000)
+        all_preds.append(preds.cpu())
+        all_targets.append(Y_batch.cpu())
 
     avg_loss = total_loss / len(loader.dataset)
     all_preds = torch.cat(all_preds)
@@ -135,6 +183,11 @@ def evaluate(model, loader, criterion, device):
     all_targets = []
 
     for X_batch, Y_batch in loader:
+        # VALIDAZIONE: Limitiamo ai secondi [2s, 8s] per evitare cicli incompleti ai bordi
+        if X_batch.size(2) >= 5000:
+            X_batch = X_batch[:, :, 1000:4000]
+            Y_batch = Y_batch[:, 1000:4000]
+            
         X_batch = X_batch.to(device)
         Y_batch = Y_batch.to(device)
 
@@ -143,8 +196,8 @@ def evaluate(model, loader, criterion, device):
 
         total_loss += loss.item() * X_batch.size(0)
         preds = logits.argmax(dim=1)
-        all_preds.append(preds.cpu().flatten())
-        all_targets.append(Y_batch.cpu().flatten())
+        all_preds.append(preds.cpu())
+        all_targets.append(Y_batch.cpu())
 
     avg_loss = total_loss / len(loader.dataset)
     all_preds = torch.cat(all_preds)
@@ -163,15 +216,19 @@ def print_metrics(phase, metrics, class_names, epoch=None, total_epochs=None):
         header = f"  Epoca {epoch}/{total_epochs} [{phase}]"
 
     print(f"{header}  Loss: {metrics['loss']:.4f}  |  "
-          f"Acc: {metrics['accuracy']:.4f}  |  "
-          f"F1 macro: {metrics['f1_macro']:.4f}  |  "
-          f"mIoU: {metrics['iou_mean']:.4f}")
+          f"Acc(px): {metrics['accuracy']:.4f}  |  "
+          f"F1(AAMI) macro: {metrics['f1_macro']:.2f}%")
 
     # Dettaglio per classe
-    for c in range(len(metrics['f1_per_class'])):
-        name = class_names.get(c, f"Classe {c}")
-        print(f"       {name:>12}: F1={metrics['f1_per_class'][c]:.4f}  "
-              f"IoU={metrics['iou_per_class'][c]:.4f}")
+    for c in range(1, len(class_names)):
+        name = class_names[c]
+        print(f"       {name:>12} Onset : Se={metrics[f'{c}_onset_Se']:5.1f}%  "
+              f"PPV={metrics[f'{c}_onset_PPV']:5.1f}%  "
+              f"F1={metrics[f'{c}_onset_F1']:5.1f}%  m±σ: {metrics[f'{c}_onset_m']:5.1f}±{metrics[f'{c}_onset_std']:.1f}ms")
+              
+        print(f"       {name:>12} Offset: Se={metrics[f'{c}_offset_Se']:5.1f}%  "
+              f"PPV={metrics[f'{c}_offset_PPV']:5.1f}%  "
+              f"F1={metrics[f'{c}_offset_F1']:5.1f}%  m±σ: {metrics[f'{c}_offset_m']:5.1f}±{metrics[f'{c}_offset_std']:.1f}ms")
 
 
 # ============================================================
