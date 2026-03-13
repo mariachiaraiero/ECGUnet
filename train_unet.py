@@ -224,11 +224,11 @@ def print_metrics(phase, metrics, class_names, epoch=None, total_epochs=None):
         name = class_names[c]
         print(f"       {name:>12} Onset : Se={metrics[f'{c}_onset_Se']:5.1f}%  "
               f"PPV={metrics[f'{c}_onset_PPV']:5.1f}%  "
-              f"F1={metrics[f'{c}_onset_F1']:5.1f}%  m±σ: {metrics[f'{c}_onset_m']:5.1f}±{metrics[f'{c}_onset_std']:.1f}ms")
+              f"F1={metrics[f'{c}_onset_F1']:5.1f}%  m±std: {metrics[f'{c}_onset_m']:5.1f}±{metrics[f'{c}_onset_std']:.1f}ms")
               
         print(f"       {name:>12} Offset: Se={metrics[f'{c}_offset_Se']:5.1f}%  "
               f"PPV={metrics[f'{c}_offset_PPV']:5.1f}%  "
-              f"F1={metrics[f'{c}_offset_F1']:5.1f}%  m±σ: {metrics[f'{c}_offset_m']:5.1f}±{metrics[f'{c}_offset_std']:.1f}ms")
+              f"F1={metrics[f'{c}_offset_F1']:5.1f}%  m±std: {metrics[f'{c}_offset_m']:5.1f}±{metrics[f'{c}_offset_std']:.1f}ms")
 
 
 # ============================================================
@@ -289,7 +289,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
                                  weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=7, verbose=True
+        optimizer, mode='min', factor=0.5, patience=7
     )
 
     print(f"  Optimizer: Adam (lr={args.lr}, wd={args.weight_decay})")
