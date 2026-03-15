@@ -218,12 +218,18 @@ def main():
     
     best_f1 = 0.0 # Monitoriamo l'F1 macro invece della loss per il model checkpointing, è più stabile
     no_improve = 0
+    history = {'train_loss': [], 'val_loss': [], 'train_f1': [], 'val_f1': []}
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         m_t = train_one_epoch(model, train_dl, criterion, optimizer, device)
         m_v = evaluate(model, val_dl, criterion, device)
         scheduler.step(epoch) # Cosine Annealing per epoch step
+
+        history['train_loss'].append(m_t['loss'])
+        history['val_loss'].append(m_v['loss'])
+        history['train_f1'].append(m_t['f1_macro'])
+        history['val_f1'].append(m_v['f1_macro'])
 
         print(f"\n--- Epoca {epoch}/{args.epochs} ({(time.time()-t0):.1f}s) --- LR: {optimizer.param_groups[0]['lr']:.2e}")
         print_metrics("TRAIN", m_t, data['class_names'])
@@ -234,6 +240,8 @@ def main():
             no_improve = 0
             torch.save({'model_state_dict': model.state_dict()}, best_path)
             print(f"  [*] Nuovo miglior modello salvato! (val_f1={best_f1:.2f}%)")
+        else:
+            no_improve += 1
             if no_improve >= args.patience:
                 print(f"[STOP] Early stopping a epoca {epoch}")
                 break
@@ -249,6 +257,10 @@ def main():
     print(f"  RISULTATI SUL TEST SET")
     print(f"{'='*60}")
     print_metrics("TEST", test_metrics, data['class_names'])
+
+    history_path = os.path.join(args.output_dir, "training_history_1.pt")
+    torch.save(history, history_path)
+    print(f"  History salvata in: {os.path.abspath(history_path)}")
 
 if __name__ == "__main__":
     main()
