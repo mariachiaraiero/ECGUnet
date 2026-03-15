@@ -246,10 +246,21 @@ def main():
             torch.save({'model_state_dict': model.state_dict()}, best_path)
             print(f"  [*] Nuovo miglior modello salvato! (val_f1={best_f1:.2f}%)")
         else:
-            no_improve += 1
             if no_improve >= args.patience:
                 print(f"[STOP] Early stopping a epoca {epoch}")
                 break
+
+    # ===== Valutazione su Test Set =====
+    print(f"\n[TEST] Caricamento del miglior modello e valutazione su test set...")
+    checkpoint = torch.load(best_path, weights_only=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    test_metrics = evaluate(model, test_dl, criterion, device)
+
+    print(f"\n{'='*60}")
+    print(f"  RISULTATI SUL TEST SET")
+    print(f"{'='*60}")
+    print_metrics("TEST", test_metrics, data['class_names'])
 
     # Salva la history per plot
     history_path = os.path.join(args.output_dir, "training_history_2.pt")
