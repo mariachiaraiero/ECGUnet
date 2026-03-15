@@ -207,6 +207,7 @@ def main():
     X, Y = data['X'], data['Y']
     train_dl = DataLoader(Subset(TensorDataset(X, Y), data['train_indices']), batch_size=args.batch_size, shuffle=True)
     val_dl   = DataLoader(Subset(TensorDataset(X, Y), data['val_indices']), batch_size=args.batch_size, shuffle=False)
+    test_dl  = DataLoader(Subset(TensorDataset(X, Y), data['test_indices']), batch_size=args.batch_size, shuffle=False)
     
     print(f"Training V2 su {device} - Dataset {X.shape}")
     
