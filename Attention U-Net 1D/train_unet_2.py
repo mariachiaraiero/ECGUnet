@@ -247,9 +247,12 @@ def main():
             torch.save({'model_state_dict': model.state_dict()}, best_path)
             print(f"  [*] Nuovo miglior modello salvato! (val_f1={best_f1:.2f}%)")
         else:
-            if no_improve >= args.patience:
-                print(f"[STOP] Early stopping a epoca {epoch}")
-                break
+            no_improve += 1
+            print(f"  [!] Nessun miglioramento per {no_improve}/{args.patience} epoche")
+
+        if no_improve >= args.patience:
+            print(f"\n[STOP] Early stopping attivato dopo {epoch} epoche.")
+            break
 
     # ===== Valutazione su Test Set =====
     print(f"\n[TEST] Caricamento del miglior modello e valutazione su test set...")
